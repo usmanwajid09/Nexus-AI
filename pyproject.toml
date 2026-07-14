@@ -1,0 +1,46 @@
+[project]
+name = "nexus-ai"
+version = "0.1.0"
+description = "Nexus AI - a modular AI operating system for knowledge workers (Phase 1 core)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0.36",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "anthropic>=0.116",
+    "langgraph>=0.4",
+    "voyageai>=0.3",
+    "pyjwt>=2.9",
+    "prometheus-client>=0.21",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# langsmith's pytest plugin (transitive via langgraph) loads a native DLL that
+# some locked-down Windows machines block; we don't use it.
+addopts = "-p no:langsmith_plugin"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

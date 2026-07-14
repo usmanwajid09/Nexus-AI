@@ -1,0 +1,8 @@
+{"question": "What backend framework do we use?", "expected_source": "Architecture notes"}
+{"question": "How does authentication work?", "expected_source": "Architecture notes"}
+{"question": "How do I deploy to staging?", "expected_source": "Deployment runbook"}
+{"question": "How do I roll back a bad release in production?", "expected_source": "Deployment runbook"}
+{"question": "When do database backups run and how would we restore?", "expected_source": "Database guide"}
+{"question": "What is the pull request process before merging?", "expected_source": "Team onboarding"}
+{"question": "What caused the outage in March 2026?", "expected_source": "Incident postmortem 2026-03"}
+{"question": "Which queries should go to the read replica?", "expected_source": "Database guide"}
