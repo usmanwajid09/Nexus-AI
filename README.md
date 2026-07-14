@@ -1,5 +1,7 @@
 # Nexus AI
 
+[![CI](https://github.com/usmanwajid09/Nexus-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/usmanwajid09/Nexus-AI/actions/workflows/ci.yml)
+
 > A modular AI operating system for knowledge workers — it remembers, retrieves, reasons, routes to specialists, understands code and images, and researches the live web.
 
 Phases 1–5 of the original plan are implemented as one coherent codebase: a routed LangGraph pipeline over a single Postgres+pgvector store, with every capability behind a small interface and every pure function unit-tested (48 tests).
@@ -89,7 +91,18 @@ curl -X POST localhost:8000/vision/analyze -F "file=@diagram.png" `
 
 # Inspect memories
 curl "localhost:8000/memories/search?q=backend"
+
+# Streaming chat (SSE): meta -> route -> sources -> delta* -> grade -> done
+curl -N -X POST localhost:8000/chat/stream -H "Content-Type: application/json" `
+  -d '{"message": "How does auth work?"}'
+
+# Conversation management
+curl localhost:8000/conversations                       # list with message counts
+curl localhost:8000/conversations/<id>                  # full transcript
+curl -X DELETE localhost:8000/conversations/<id>        # delete (messages cascade)
 ```
+
+Full interactive API docs at `localhost:8000/docs`.
 
 ### Auth (Phase 2)
 

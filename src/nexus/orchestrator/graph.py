@@ -12,6 +12,7 @@ longer adds latency to the response.
 import logging
 from typing import TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -131,15 +132,26 @@ def build_graph(
 
         route_addendum = CODE_ADDENDUM if state.get("route") == "code" else ""
         messages = [*state.get("history", []), {"role": "user", "content": state["user_message"]}]
-        answer = await llm.complete(
+
+        # Deltas go to the custom stream channel (SSE endpoint); when the graph
+        # is invoked non-streaming the writes are simply dropped.
+        try:
+            writer = get_stream_writer()
+        except Exception:
+            writer = lambda _payload: None  # noqa: E731
+
+        parts: list[str] = []
+        async for delta in llm.complete_stream(
             system=SYSTEM_PROMPT.format(
                 memory_block=memory_block,
                 context_block=context_block,
                 route_addendum=route_addendum,
             ),
             messages=messages,
-        )
-        return {"answer": answer}
+        ):
+            parts.append(delta)
+            writer({"type": "delta", "text": delta})
+        return {"answer": "".join(parts)}
 
     async def research_node(state: NexusState) -> NexusState:
         messages = [*state.get("history", []), {"role": "user", "content": state["user_message"]}]

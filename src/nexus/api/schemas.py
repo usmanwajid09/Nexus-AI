@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -49,3 +50,23 @@ class MemoryOut(BaseModel):
     type: str
     content: str
     access_count: int
+
+
+class MessageOut(BaseModel):
+    role: str
+    content: str
+    created_at: datetime
+
+
+class ConversationSummary(BaseModel):
+    id: uuid.UUID
+    title: str | None
+    created_at: datetime
+    message_count: int
+
+
+class ConversationDetail(BaseModel):
+    id: uuid.UUID
+    title: str | None
+    created_at: datetime
+    messages: list[MessageOut]

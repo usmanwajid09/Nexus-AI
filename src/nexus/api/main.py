@@ -1,23 +1,29 @@
+import asyncio
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from sqlalchemy import select
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func, select
 
 from nexus.api.auth import require_auth
 from nexus.api.schemas import (
     ChatRequest,
     ChatResponse,
+    ConversationDetail,
+    ConversationSummary,
     IngestRequest,
     IngestResponse,
     MemoryOut,
+    MessageOut,
     RepoIngestRequest,
     RepoIngestResponse,
     VisionResponse,
 )
+from nexus.api.streaming import sse_format
 from nexus.code.ingest import ingest_repo
 from nexus.config import get_settings
 from nexus.db.models import Conversation, Message
@@ -31,6 +37,16 @@ from nexus.orchestrator.graph import build_graph
 from nexus.rag.ingest import ingest_document
 
 logger = logging.getLogger("nexus")
+
+# Fire-and-forget tasks (post-stream memory writes) need a strong reference
+# until they finish, or the event loop may garbage-collect them mid-flight.
+_pending_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _pending_tasks.add(task)
+    task.add_done_callback(_pending_tasks.discard)
 
 
 @asynccontextmanager
@@ -57,7 +73,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Nexus AI", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="Nexus AI", version="0.6.0", lifespan=lifespan)
 app.mount("/metrics", metrics_app)
 
 
@@ -83,16 +99,9 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(
-    req: ChatRequest,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    user: str = Depends(require_auth),
-) -> ChatResponse:
-    settings = request.app.state.settings
+async def _start_turn(req: ChatRequest, settings) -> tuple[uuid.UUID, list[dict[str, str]]]:
+    """Resolve/create the conversation, load history, persist the user message."""
     session_factory = get_session_factory()
-
     async with session_factory() as session:
         if req.conversation_id is not None:
             conversation = await session.get(Conversation, req.conversation_id)
@@ -115,7 +124,34 @@ async def chat(
 
         session.add(Message(conversation_id=conversation.id, role="user", content=req.message))
         await session.commit()
-        conversation_id = conversation.id
+        return conversation.id, history
+
+
+async def _finish_turn(app_state, *, conversation_id: uuid.UUID, user_message: str, answer: str) -> None:
+    """Persist the assistant message and kick off background memory extraction."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        session.add(Message(conversation_id=conversation_id, role="assistant", content=answer))
+        await session.commit()
+    _spawn(
+        memorize_turn(
+            app_state.llm,
+            app_state.embedder,
+            session_factory,
+            user_message=user_message,
+            answer=answer,
+            source=str(conversation_id),
+        )
+    )
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(
+    req: ChatRequest,
+    request: Request,
+    user: str = Depends(require_auth),
+) -> ChatResponse:
+    conversation_id, history = await _start_turn(req, request.app.state.settings)
 
     result = await request.app.state.graph.ainvoke(
         {
@@ -125,21 +161,11 @@ async def chat(
         }
     )
 
-    async with session_factory() as session:
-        session.add(
-            Message(conversation_id=conversation_id, role="assistant", content=result["answer"])
-        )
-        await session.commit()
-
-    # Memory extraction happens after the response is sent (Phase 2).
-    background_tasks.add_task(
-        memorize_turn,
-        request.app.state.llm,
-        request.app.state.embedder,
-        session_factory,
+    await _finish_turn(
+        request.app.state,
+        conversation_id=conversation_id,
         user_message=req.message,
         answer=result["answer"],
-        source=str(conversation_id),
     )
 
     return ChatResponse(
@@ -150,6 +176,91 @@ async def chat(
         sources=[c["source"] for c in result.get("context_chunks", [])],
         confidence=result.get("confidence"),
         unsupported_claims=result.get("unsupported_claims", []),
+    )
+
+
+@app.post("/chat/stream")
+async def chat_stream(
+    req: ChatRequest,
+    request: Request,
+    user: str = Depends(require_auth),
+) -> StreamingResponse:
+    """SSE variant of /chat.
+
+    Events: meta (conversation id) -> route -> sources -> delta* -> grade -> done.
+    The research route emits its whole answer as one delta.
+    """
+    conversation_id, history = await _start_turn(req, request.app.state.settings)
+    graph = request.app.state.graph
+    app_state = request.app.state
+
+    async def event_stream():
+        final: dict = {}
+        parts: list[str] = []
+        yield sse_format("meta", {"conversation_id": str(conversation_id)})
+        try:
+            async for mode, chunk in graph.astream(
+                {
+                    "conversation_id": str(conversation_id),
+                    "user_message": req.message,
+                    "history": history,
+                },
+                stream_mode=["updates", "custom"],
+            ):
+                if mode == "custom":
+                    if isinstance(chunk, dict) and chunk.get("type") == "delta":
+                        parts.append(chunk["text"])
+                        yield sse_format("delta", {"text": chunk["text"]})
+                    continue
+                for node, update in chunk.items():
+                    if not isinstance(update, dict):
+                        continue
+                    final.update(update)
+                    if node == "route":
+                        yield sse_format("route", {"route": update.get("route", "general")})
+                    elif node == "retrieve":
+                        sources = [c["source"] for c in update.get("context_chunks", [])]
+                        yield sse_format("sources", {"sources": sources})
+                    elif node == "research" and update.get("answer"):
+                        parts.append(update["answer"])
+                        yield sse_format("delta", {"text": update["answer"]})
+                    elif node == "grade":
+                        yield sse_format(
+                            "grade",
+                            {
+                                "confidence": update.get("confidence"),
+                                "unsupported_claims": update.get("unsupported_claims", []),
+                            },
+                        )
+        except Exception:
+            logger.exception("chat stream failed (conversation=%s)", conversation_id)
+            yield sse_format("error", {"detail": "internal error"})
+            return
+
+        answer = final.get("answer") or "".join(parts)
+        await _finish_turn(
+            app_state,
+            conversation_id=conversation_id,
+            user_message=req.message,
+            answer=answer,
+        )
+        yield sse_format(
+            "done",
+            {
+                "conversation_id": str(conversation_id),
+                "answer": answer,
+                "route": final.get("route", "general"),
+                "recalled_memories": final.get("recalled_memories", []),
+                "sources": [c["source"] for c in final.get("context_chunks", [])],
+                "confidence": final.get("confidence"),
+                "unsupported_claims": final.get("unsupported_claims", []),
+            },
+        )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -217,6 +328,65 @@ async def vision_analyze(
                 source="vision",
             )
     return VisionResponse(answer=answer, ingested_document_id=document_id)
+
+
+@app.get("/conversations", response_model=list[ConversationSummary])
+async def list_conversations(
+    limit: int = 50, offset: int = 0, user: str = Depends(require_auth)
+) -> list[ConversationSummary]:
+    async with get_session_factory()() as session:
+        stmt = (
+            select(Conversation, func.count(Message.id).label("message_count"))
+            .outerjoin(Message, Message.conversation_id == Conversation.id)
+            .group_by(Conversation.id)
+            .order_by(Conversation.created_at.desc())
+            .limit(min(limit, 200))
+            .offset(offset)
+        )
+        rows = (await session.execute(stmt)).all()
+    return [
+        ConversationSummary(
+            id=conv.id, title=conv.title, created_at=conv.created_at, message_count=count
+        )
+        for conv, count in rows
+    ]
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetail)
+async def get_conversation(
+    conversation_id: uuid.UUID, user: str = Depends(require_auth)
+) -> ConversationDetail:
+    async with get_session_factory()() as session:
+        conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        messages = (
+            await session.scalars(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at)
+            )
+        ).all()
+    return ConversationDetail(
+        id=conversation.id,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        messages=[
+            MessageOut(role=m.role, content=m.content, created_at=m.created_at) for m in messages
+        ],
+    )
+
+
+@app.delete("/conversations/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: uuid.UUID, user: str = Depends(require_auth)
+) -> None:
+    async with get_session_factory()() as session:
+        conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        await session.delete(conversation)  # messages cascade via FK
+        await session.commit()
 
 
 @app.get("/memories/search", response_model=list[MemoryOut])

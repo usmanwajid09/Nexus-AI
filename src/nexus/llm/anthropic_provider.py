@@ -48,6 +48,30 @@ class AnthropicProvider(LLMProvider):
             return REFUSAL_FALLBACK
         return next((b.text for b in response.content if b.type == "text"), "")
 
+    async def complete_stream(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 16000,
+    ):
+        streamed_any = False
+        async with self._client.messages.stream(
+            model=self._model,
+            max_tokens=max_tokens,
+            thinking={"type": "adaptive"},
+            system=system,
+            messages=messages,
+        ) as stream:
+            async for text in stream.text_stream:
+                if text:
+                    streamed_any = True
+                    yield text
+            final = await stream.get_final_message()
+        record_llm_usage("complete", final.usage)
+        if final.stop_reason == "refusal" and not streamed_any:
+            yield REFUSAL_FALLBACK
+
     async def complete_json(
         self,
         *,
