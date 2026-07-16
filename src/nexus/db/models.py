@@ -24,6 +24,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    owner: Mapped[str] = mapped_column(Text, default="anonymous", index=True)
     title: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -56,6 +57,7 @@ class Memory(Base):
     __tablename__ = "memories"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    owner: Mapped[str] = mapped_column(Text, default="anonymous", index=True)
     type: Mapped[MemoryType] = mapped_column(Enum(MemoryType, name="memory_type"))
     content: Mapped[str] = mapped_column(Text)
     source: Mapped[str | None] = mapped_column(Text)  # e.g. conversation id it came from
@@ -70,6 +72,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    owner: Mapped[str] = mapped_column(Text, default="anonymous", index=True)
     title: Mapped[str] = mapped_column(Text)
     source: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(Text, default="text")  # "text" | "code"

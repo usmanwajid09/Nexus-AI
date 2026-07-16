@@ -26,13 +26,14 @@ async def memorize_turn(
     user_message: str,
     answer: str,
     source: str | None,
+    owner: str = "anonymous",
 ) -> None:
     try:
         extracted = await extract_memories(llm, user_message=user_message, assistant_reply=answer)
         if not extracted:
             return
         async with session_factory() as session:
-            await add_memories(session, embedder, extracted, source=source)
+            await add_memories(session, embedder, extracted, owner=owner, source=source)
         logger.info("stored %d memories (source=%s)", len(extracted), source)
     except Exception:
         logger.exception("memory extraction failed (source=%s)", source)

@@ -50,6 +50,7 @@ async def ingest_repo(
     embedder: EmbeddingProvider,
     root: Path,
     *,
+    owner: str = "anonymous",
     max_files: int = 2000,
     max_file_bytes: int = 200_000,
 ) -> RepoIngestStats:
@@ -78,7 +79,7 @@ async def ingest_repo(
 
         embeddings = await embedder.embed_documents(chunks)
         relative = path.relative_to(root).as_posix()
-        document = Document(title=relative, source=f"repo:{root}", kind="code")
+        document = Document(title=relative, source=f"repo:{root}", kind="code", owner=owner)
         session.add(document)
         await session.flush()
         for position, (content, embedding) in enumerate(zip(chunks, embeddings)):

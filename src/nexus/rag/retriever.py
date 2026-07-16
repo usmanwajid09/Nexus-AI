@@ -18,31 +18,45 @@ class RetrievedChunk:
     document_title: str
 
 
-def _with_kind(stmt: Select, kind: str | None) -> Select:
+def _scoped(stmt: Select, owner: str, kind: str | None) -> Select:
+    stmt = stmt.join(Document, Chunk.document_id == Document.id).where(Document.owner == owner)
     if kind is not None:
-        stmt = stmt.join(Document, Chunk.document_id == Document.id).where(Document.kind == kind)
+        stmt = stmt.where(Document.kind == kind)
     return stmt
 
 
 async def vector_search(
-    session: AsyncSession, embedding: list[float], limit: int, *, kind: str | None = None
+    session: AsyncSession,
+    embedding: list[float],
+    limit: int,
+    *,
+    owner: str,
+    kind: str | None = None,
 ) -> list[uuid.UUID]:
-    stmt = _with_kind(
-        select(Chunk.id).order_by(Chunk.embedding.cosine_distance(embedding)).limit(limit), kind
+    stmt = _scoped(
+        select(Chunk.id).order_by(Chunk.embedding.cosine_distance(embedding)).limit(limit),
+        owner,
+        kind,
     )
     return list((await session.scalars(stmt)).all())
 
 
 async def keyword_search(
-    session: AsyncSession, query: str, limit: int, *, kind: str | None = None
+    session: AsyncSession,
+    query: str,
+    limit: int,
+    *,
+    owner: str,
+    kind: str | None = None,
 ) -> list[uuid.UUID]:
     tsquery = func.plainto_tsquery("english", query)
     tsvector = func.to_tsvector("english", Chunk.content)
-    stmt = _with_kind(
+    stmt = _scoped(
         select(Chunk.id)
         .where(tsvector.op("@@")(tsquery))
         .order_by(func.ts_rank(tsvector, tsquery).desc())
         .limit(limit),
+        owner,
         kind,
     )
     return list((await session.scalars(stmt)).all())
@@ -53,12 +67,13 @@ async def retrieve(
     embedder: EmbeddingProvider,
     queries: Sequence[str],
     *,
+    owner: str = "anonymous",
     limit: int = 6,
     kind: str | None = None,
     reranker: Reranker | None = None,
     rerank_query: str | None = None,
 ) -> list[RetrievedChunk]:
-    """Hybrid multi-query retrieval.
+    """Hybrid multi-query retrieval, scoped to one owner's documents.
 
     Every query contributes a vector ranking and a keyword ranking; all
     rankings are fused with RRF. When a reranker is given, fusion over-fetches
@@ -70,8 +85,8 @@ async def retrieve(
     rankings: list[list[uuid.UUID]] = []
     for query in queries:
         embedding = await embedder.embed_query(query)
-        rankings.append(await vector_search(session, embedding, limit * 2, kind=kind))
-        rankings.append(await keyword_search(session, query, limit * 2, kind=kind))
+        rankings.append(await vector_search(session, embedding, limit * 2, owner=owner, kind=kind))
+        rankings.append(await keyword_search(session, query, limit * 2, owner=owner, kind=kind))
 
     candidate_count = limit * 2 if reranker is not None else limit
     fused_ids = rrf_fuse(rankings)[:candidate_count]

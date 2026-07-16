@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     max_recalled_memories: int = 5
     max_history_messages: int = 20
 
+    # Phase 6 — memory decay/reinforcement (Ebbinghaus-style forgetting curve)
+    memory_half_life_days: float = 30.0
+    memory_reinforcement: float = 0.25
+
     # Phase 2 — self-improving RAG
     rewrite_enabled: bool = True
     rerank_enabled: bool = True

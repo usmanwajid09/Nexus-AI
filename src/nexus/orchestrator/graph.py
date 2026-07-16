@@ -56,6 +56,7 @@ or when you could not verify something.\
 
 class NexusState(TypedDict, total=False):
     conversation_id: str
+    owner: str  # authenticated subject; "anonymous" in dev mode
     user_message: str
     history: list[dict[str, str]]  # prior turns, chat format
     route: str  # general | research | code
@@ -82,7 +83,11 @@ def build_graph(
     async def recall_node(state: NexusState) -> NexusState:
         async with session_factory() as session:
             memories = await recall(
-                session, embedder, state["user_message"], limit=settings.max_recalled_memories
+                session,
+                embedder,
+                state["user_message"],
+                owner=state.get("owner", "anonymous"),
+                limit=settings.max_recalled_memories,
             )
         return {"recalled_memories": [m.content for m in memories]}
 
@@ -101,6 +106,7 @@ def build_graph(
                 session,
                 embedder,
                 state.get("search_queries") or [state["user_message"]],
+                owner=state.get("owner", "anonymous"),
                 limit=settings.max_context_chunks,
                 kind=kind,
                 reranker=reranker,

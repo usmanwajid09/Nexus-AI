@@ -4,7 +4,7 @@
 
 > A modular AI operating system for knowledge workers — it remembers, retrieves, reasons, routes to specialists, understands code and images, and researches the live web.
 
-Phases 1–5 of the original plan are implemented as one coherent codebase: a routed LangGraph pipeline over a single Postgres+pgvector store, with every capability behind a small interface and every pure function unit-tested (53 tests).
+Phases 1–8 are implemented as one coherent codebase: a routed LangGraph pipeline over a single Postgres+pgvector store, with every capability behind a small interface and every pure function unit-tested (62 tests). Ships with a built-in web chat UI.
 
 📄 **[Technical Implementation Report (PDF)](docs/Nexus-AI-Technical-Report.pdf)** — 16 pages covering the full stack with rationale, core concepts, design trade-offs, and engineering war stories.
 
@@ -14,7 +14,7 @@ Phases 1–5 of the original plan are implemented as one coherent codebase: a ro
 |---|---|---|
 | Postgres + Qdrant + Neo4j + Redis + Kafka | **One Postgres with pgvector** | Vector, keyword, and relational data in one database. Interfaces make Qdrant/Neo4j a swap-in when a measured limit demands it. |
 | Basic RAG → "self-improving RAG" | **Query rewriting → multi-query hybrid retrieval (RRF) → LLM reranking → groundedness grading** + golden-set eval harness | Every stage of the plan's pipeline, without torch or a search cluster. The eval harness (`scripts/run_evals.py`) is what makes "self-improving" measurable. |
-| 4 separate memory systems | **One `memories` table** (episodic/semantic/procedural types) written by a **background memory writer** | Extraction runs after the response is sent — zero added chat latency. Access stats are stored for future decay/reinforcement. |
+| 4 separate memory systems | **One `memories` table** (episodic/semantic/procedural types) written by a **background memory writer** | Extraction runs after the response is sent — zero added chat latency. Access stats feed the decay/reinforcement model (phase 6). |
 | CEO→Manager→…→Deployment agent hierarchy | **Router + specialists**: `general`, `code`, and `research` routes as conditional graph edges | Specialists are graph branches, not microservices. Adding one = one node + one edge. |
 | Browser agent (Playwright) | **Research agent on Claude's server-side `web_search` + `web_fetch` tools** (handles `pause_turn` continuation) | Web-grounded answers with source URLs, no browser infrastructure to babysit. Full click-and-type automation is the one deliberately deferred piece (see Deferred). |
 | Autonomous engineer (tree-sitter, PR bot) | **Repo ingestion with definition-boundary code chunking** (`kind="code"`), code route proposes **unified diffs** grounded in retrieved source | tree-sitter is a native extension — blocked on locked-down machines (this one blocks unsigned DLLs). The heuristic chunker sits behind the same signature so tree-sitter can slot in. |
@@ -22,6 +22,15 @@ Phases 1–5 of the original plan are implemented as one coherent codebase: a ro
 | Enterprise backend (JWT, RBAC, orgs, Kafka) | **JWT auth (HS256)** with a dev-mode off switch; single-tenant | Auth is on every data endpoint when `AUTH_SECRET` is set. RBAC/orgs deferred until there are two users. |
 | OpenTelemetry + Grafana + Prometheus | **Prometheus metrics** (latency, LLM calls/tokens, retrieval sizes, answer confidence) + compose profile for **Prometheus + Grafana** | `/metrics` is real and scraped; dashboards run with `--profile observability`. |
 | Kubernetes + NGINX | **docker-compose** | Compose runs the whole stack on a laptop. Kubernetes before users is résumé-driven ops. |
+
+**Added in phases 6–8:**
+
+| Capability | What it does |
+|---|---|
+| **Memory decay & reinforcement** | Recall re-scores candidates with an Ebbinghaus-style forgetting curve: `score = similarity × 0.5^(age / effective_half_life)`, where every past recall stretches the half-life. Old unused memories fade; frequently used ones persist. `scripts/prune_memories.py` deletes never-recalled memories past ~4 half-lives. |
+| **Multi-tenant scoping** | Every conversation, document, and memory carries an `owner` set from the JWT subject. All queries — recall, retrieval, conversations — are owner-filtered; foreign conversations return 404 (existence isn't leaked). Dev mode (no `AUTH_SECRET`) runs as a single `anonymous` tenant. |
+| **Web chat UI** | A dependency-free single-file UI served at `/` — streaming responses over SSE with route badge, confidence pill, and source chips; conversation sidebar (open/delete); optional bearer-token field for authenticated deployments. |
+| **Alembic scaffolding** | `migrations/` wired to the models; `alembic revision --autogenerate -m initial && alembic upgrade head` once your schema stabilizes (dev mode keeps using `create_all`). |
 
 ## Architecture
 
@@ -61,6 +70,8 @@ python -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 uvicorn nexus.api.main:app --reload
 ```
+
+Then open **http://localhost:8000/** for the chat UI (interactive API docs at `/docs`).
 
 Optional observability stack: `docker compose --profile observability up -d` → Grafana at `:3000`, Prometheus at `:9090` scraping `:8000/metrics`.
 
@@ -134,8 +145,9 @@ pytest    # 48 tests over the pure logic: chunking (text+code), RRF, all LLM-out
 - **Playwright browser automation** — the research agent covers web information needs server-side; driving a real browser adds a large security/ops surface that deserves its own design pass (sandboxing, action confirmation).
 - **tree-sitter AST parsing** — native extension; blocked by Application Control policies on locked-down Windows machines (the same policy required the `uuid_utils` shim in [_compat.py](src/nexus/_compat.py)). The heuristic chunker in [code/chunker.py](src/nexus/code/chunker.py) shares its signature.
 - **Neo4j knowledge graph** — earns its place when code-relationship queries ("every API touching the Orders table") become a real workload, i.e. deep in Phase 4 usage, not before.
-- **Alembic migrations** — `create_all` is right while the schema is still moving; generate the initial Alembic revision against a live DB once it stabilizes.
-- **RBAC / organizations / Kafka** — multi-tenant concerns, pointless before a second user exists.
+- **Org-level RBAC / Kafka** — per-user data scoping ships (phase 7); roles, organizations, and event streaming wait for a real multi-team deployment.
+
+> **Schema note:** phases 6–8 added `owner` columns. On an existing dev database, reset with `docker compose down -v` (or adopt Alembic and generate the initial revision).
 
 ## Design rules this codebase follows
 

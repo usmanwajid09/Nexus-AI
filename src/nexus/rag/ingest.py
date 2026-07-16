@@ -14,6 +14,7 @@ async def ingest_document(
     title: str,
     text: str,
     source: str | None = None,
+    owner: str = "anonymous",
 ) -> tuple[uuid.UUID, int]:
     """Chunk, embed, and store a document. Returns (document_id, chunk_count)."""
     chunks = chunk_text(text)
@@ -22,7 +23,7 @@ async def ingest_document(
 
     embeddings = await embedder.embed_documents(chunks)
 
-    document = Document(title=title, source=source)
+    document = Document(title=title, source=source, owner=owner)
     session.add(document)
     await session.flush()
 

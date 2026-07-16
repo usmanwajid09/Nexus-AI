@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 
 from nexus.api.auth import require_auth
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Nexus AI", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="Nexus AI", version="0.9.0", lifespan=lifespan)
 app.mount("/metrics", metrics_app)
 
 
@@ -94,21 +94,32 @@ async def request_logging(request: Request, call_next):
     return response
 
 
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+async def web_ui() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "index.html")
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-async def _start_turn(req: ChatRequest, settings) -> tuple[uuid.UUID, list[dict[str, str]]]:
+async def _start_turn(
+    req: ChatRequest, settings, owner: str
+) -> tuple[uuid.UUID, list[dict[str, str]]]:
     """Resolve/create the conversation, load history, persist the user message."""
     session_factory = get_session_factory()
     async with session_factory() as session:
         if req.conversation_id is not None:
             conversation = await session.get(Conversation, req.conversation_id)
-            if conversation is None:
+            # 404 (not 403) on foreign conversations: don't leak their existence.
+            if conversation is None or conversation.owner != owner:
                 raise HTTPException(status_code=404, detail="conversation not found")
         else:
-            conversation = Conversation(title=req.message[:80])
+            conversation = Conversation(title=req.message[:80], owner=owner)
             session.add(conversation)
             await session.flush()
 
@@ -127,7 +138,9 @@ async def _start_turn(req: ChatRequest, settings) -> tuple[uuid.UUID, list[dict[
         return conversation.id, history
 
 
-async def _finish_turn(app_state, *, conversation_id: uuid.UUID, user_message: str, answer: str) -> None:
+async def _finish_turn(
+    app_state, *, conversation_id: uuid.UUID, user_message: str, answer: str, owner: str
+) -> None:
     """Persist the assistant message and kick off background memory extraction."""
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -141,6 +154,7 @@ async def _finish_turn(app_state, *, conversation_id: uuid.UUID, user_message: s
             user_message=user_message,
             answer=answer,
             source=str(conversation_id),
+            owner=owner,
         )
     )
 
@@ -151,11 +165,12 @@ async def chat(
     request: Request,
     user: str = Depends(require_auth),
 ) -> ChatResponse:
-    conversation_id, history = await _start_turn(req, request.app.state.settings)
+    conversation_id, history = await _start_turn(req, request.app.state.settings, user)
 
     result = await request.app.state.graph.ainvoke(
         {
             "conversation_id": str(conversation_id),
+            "owner": user,
             "user_message": req.message,
             "history": history,
         }
@@ -166,6 +181,7 @@ async def chat(
         conversation_id=conversation_id,
         user_message=req.message,
         answer=result["answer"],
+        owner=user,
     )
 
     return ChatResponse(
@@ -190,9 +206,10 @@ async def chat_stream(
     Events: meta (conversation id) -> route -> sources -> delta* -> grade -> done.
     The research route emits its whole answer as one delta.
     """
-    conversation_id, history = await _start_turn(req, request.app.state.settings)
+    conversation_id, history = await _start_turn(req, request.app.state.settings, user)
     graph = request.app.state.graph
     app_state = request.app.state
+    owner = user
 
     async def event_stream():
         final: dict = {}
@@ -202,6 +219,7 @@ async def chat_stream(
             async for mode, chunk in graph.astream(
                 {
                     "conversation_id": str(conversation_id),
+                    "owner": owner,
                     "user_message": req.message,
                     "history": history,
                 },
@@ -243,6 +261,7 @@ async def chat_stream(
             conversation_id=conversation_id,
             user_message=req.message,
             answer=answer,
+            owner=owner,
         )
         yield sse_format(
             "done",
@@ -275,6 +294,7 @@ async def ingest(
             title=req.title,
             text=req.text,
             source=req.source,
+            owner=user,
         )
     return IngestResponse(document_id=document_id, chunks=chunk_count)
 
@@ -292,6 +312,7 @@ async def ingest_repository(
             session,
             request.app.state.embedder,
             root,
+            owner=user,
             max_files=settings.repo_max_files,
             max_file_bytes=settings.repo_max_file_bytes,
         )
@@ -326,6 +347,7 @@ async def vision_analyze(
                 title=f"vision: {file.filename or 'image'}",
                 text=answer,
                 source="vision",
+                owner=user,
             )
     return VisionResponse(answer=answer, ingested_document_id=document_id)
 
@@ -338,6 +360,7 @@ async def list_conversations(
         stmt = (
             select(Conversation, func.count(Message.id).label("message_count"))
             .outerjoin(Message, Message.conversation_id == Conversation.id)
+            .where(Conversation.owner == user)
             .group_by(Conversation.id)
             .order_by(Conversation.created_at.desc())
             .limit(min(limit, 200))
@@ -358,7 +381,7 @@ async def get_conversation(
 ) -> ConversationDetail:
     async with get_session_factory()() as session:
         conversation = await session.get(Conversation, conversation_id)
-        if conversation is None:
+        if conversation is None or conversation.owner != user:
             raise HTTPException(status_code=404, detail="conversation not found")
         messages = (
             await session.scalars(
@@ -383,7 +406,7 @@ async def delete_conversation(
 ) -> None:
     async with get_session_factory()() as session:
         conversation = await session.get(Conversation, conversation_id)
-        if conversation is None:
+        if conversation is None or conversation.owner != user:
             raise HTTPException(status_code=404, detail="conversation not found")
         await session.delete(conversation)  # messages cascade via FK
         await session.commit()
@@ -394,7 +417,7 @@ async def search_memories(
     q: str, request: Request, limit: int = 10, user: str = Depends(require_auth)
 ) -> list[MemoryOut]:
     async with get_session_factory()() as session:
-        memories = await recall(session, request.app.state.embedder, q, limit=limit)
+        memories = await recall(session, request.app.state.embedder, q, owner=user, limit=limit)
     return [
         MemoryOut(id=m.id, type=m.type.value, content=m.content, access_count=m.access_count)
         for m in memories

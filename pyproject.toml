@@ -16,6 +16,7 @@ dependencies = [
     "pyjwt>=2.9",
     "prometheus-client>=0.21",
     "python-multipart>=0.0.9",
+    "alembic>=1.14",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+nexus = ["api/static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

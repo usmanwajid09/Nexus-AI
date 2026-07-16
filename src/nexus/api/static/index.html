@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nexus AI</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --panel-2: #1e2740; --line: #2a3550;
+    --ink: #e8edf6; --dim: #8b97ad; --accent: #4f8ef7; --good: #34c98e;
+    --warn: #e8b13f; --bad: #e0635f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--ink); height: 100vh; display: flex;
+  }
+  /* ---------- sidebar ---------- */
+  #sidebar {
+    width: 264px; min-width: 264px; background: var(--panel);
+    border-right: 1px solid var(--line); display: flex; flex-direction: column;
+  }
+  #brand { padding: 16px; font-weight: 700; font-size: 16px; letter-spacing: .3px; }
+  #brand small { display: block; color: var(--dim); font-weight: 400; font-size: 11px; }
+  #new-chat {
+    margin: 0 12px 10px; padding: 9px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel-2); color: var(--ink); cursor: pointer; font-size: 13px;
+  }
+  #new-chat:hover { border-color: var(--accent); }
+  #conv-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
+  .conv {
+    padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--dim);
+    font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; justify-content: space-between; gap: 6px; align-items: center;
+  }
+  .conv:hover { background: var(--panel-2); color: var(--ink); }
+  .conv.active { background: var(--panel-2); color: var(--ink); }
+  .conv .del { visibility: hidden; color: var(--dim); border: 0; background: none;
+    cursor: pointer; font-size: 13px; }
+  .conv:hover .del { visibility: visible; }
+  .conv .del:hover { color: var(--bad); }
+  #token-box { padding: 12px; border-top: 1px solid var(--line); }
+  #token-box input {
+    width: 100%; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); font-size: 12px;
+  }
+  #token-box label { font-size: 11px; color: var(--dim); display: block; margin-bottom: 5px; }
+  /* ---------- main ---------- */
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #messages { flex: 1; overflow-y: auto; padding: 24px 0; }
+  .row { max-width: 780px; margin: 0 auto 16px; padding: 0 24px; }
+  .who { font-size: 11px; color: var(--dim); margin-bottom: 4px; text-transform: uppercase;
+    letter-spacing: .8px; }
+  .bubble {
+    padding: 12px 14px; border-radius: 10px; white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .user .bubble { background: var(--panel-2); border: 1px solid var(--line); }
+  .assistant .bubble { background: var(--panel); border: 1px solid var(--line); }
+  .error .bubble { border-color: var(--bad); color: var(--bad); }
+  .meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+  .chip {
+    font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--dim); background: var(--bg);
+  }
+  .chip.route { color: var(--accent); border-color: var(--accent); }
+  .chip.conf-hi { color: var(--good); border-color: var(--good); }
+  .chip.conf-mid { color: var(--warn); border-color: var(--warn); }
+  .chip.conf-lo { color: var(--bad); border-color: var(--bad); }
+  .cursor { display: inline-block; width: 7px; height: 15px; background: var(--accent);
+    vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #composer {
+    border-top: 1px solid var(--line); padding: 14px 24px 18px; background: var(--panel);
+  }
+  #composer-inner { max-width: 780px; margin: 0 auto; display: flex; gap: 10px; }
+  #input {
+    flex: 1; resize: none; padding: 11px 13px; border-radius: 10px; min-height: 44px;
+    max-height: 160px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--ink); font: inherit;
+  }
+  #input:focus { outline: none; border-color: var(--accent); }
+  #send {
+    padding: 0 20px; border-radius: 10px; border: 0; background: var(--accent);
+    color: #fff; font-weight: 600; cursor: pointer;
+  }
+  #send:disabled { opacity: .45; cursor: default; }
+  #empty { text-align: center; color: var(--dim); margin-top: 18vh; }
+  #empty h2 { color: var(--ink); font-size: 20px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+  <div id="sidebar">
+    <div id="brand">Nexus AI<small>memory &middot; RAG &middot; agents</small></div>
+    <button id="new-chat">+ New chat</button>
+    <div id="conv-list"></div>
+    <div id="token-box">
+      <label for="token">API token (only if AUTH_SECRET is set)</label>
+      <input id="token" type="password" placeholder="Bearer token" autocomplete="off">
+    </div>
+  </div>
+  <div id="main">
+    <div id="messages">
+      <div id="empty">
+        <h2>Nexus AI</h2>
+        <div>Ask about your documents and code, request web research,<br>
+        or just tell it something worth remembering.</div>
+      </div>
+    </div>
+    <div id="composer">
+      <div id="composer-inner">
+        <textarea id="input" rows="1" placeholder="Message Nexus..."></textarea>
+        <button id="send">Send</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { conversationId: null, busy: false };
+
+$("token").value = localStorage.getItem("nexus_token") || "";
+$("token").addEventListener("change", () => {
+  localStorage.setItem("nexus_token", $("token").value.trim());
+});
+
+function headers(json = true) {
+  const h = {};
+  if (json) h["Content-Type"] = "application/json";
+  const token = $("token").value.trim();
+  if (token) h["Authorization"] = "Bearer " + token;
+  return h;
+}
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function addRow(who, text) {
+  $("empty")?.remove();
+  const row = el("div", "row " + who);
+  row.appendChild(el("div", "who", who === "user" ? "You" : who === "error" ? "Error" : "Nexus"));
+  const bubble = el("div", "bubble", text || "");
+  row.appendChild(bubble);
+  $("messages").appendChild(row);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return { row, bubble };
+}
+
+function addMeta(row, { route, sources, confidence }) {
+  const meta = el("div", "meta");
+  if (route) meta.appendChild(el("span", "chip route", route));
+  if (typeof confidence === "number") {
+    const cls = confidence >= 0.8 ? "conf-hi" : confidence >= 0.5 ? "conf-mid" : "conf-lo";
+    meta.appendChild(el("span", "chip " + cls, "confidence " + Math.round(confidence * 100) + "%"));
+  }
+  for (const s of (sources || []).slice(0, 6)) meta.appendChild(el("span", "chip", s));
+  if (meta.children.length) row.appendChild(meta);
+}
+
+/* ---------- conversations sidebar ---------- */
+async function loadConversations() {
+  try {
+    const res = await fetch("/conversations", { headers: headers(false) });
+    if (!res.ok) return;
+    const items = await res.json();
+    const list = $("conv-list");
+    list.innerHTML = "";
+    for (const c of items) {
+      const item = el("div", "conv" + (c.id === state.conversationId ? " active" : ""));
+      item.appendChild(el("span", null, c.title || "(untitled)"));
+      const del = el("button", "del", "×");
+      del.title = "Delete conversation";
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        await fetch("/conversations/" + c.id, { method: "DELETE", headers: headers(false) });
+        if (state.conversationId === c.id) newChat();
+        loadConversations();
+      };
+      item.appendChild(del);
+      item.onclick = () => openConversation(c.id);
+      list.appendChild(item);
+    }
+  } catch { /* sidebar is best-effort */ }
+}
+
+async function openConversation(id) {
+  const res = await fetch("/conversations/" + id, { headers: headers(false) });
+  if (!res.ok) return;
+  const conv = await res.json();
+  state.conversationId = id;
+  $("messages").innerHTML = "";
+  for (const m of conv.messages) addRow(m.role === "user" ? "user" : "assistant", m.content);
+  loadConversations();
+}
+
+function newChat() {
+  state.conversationId = null;
+  $("messages").innerHTML =
+    '<div id="empty"><h2>Nexus AI</h2><div>New conversation.</div></div>';
+  loadConversations();
+}
+$("new-chat").onclick = newChat;
+
+/* ---------- SSE chat ---------- */
+function parseFrame(frame) {
+  let event = "message", data = "";
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event: ")) event = line.slice(7).trim();
+    else if (line.startsWith("data: ")) data += line.slice(6);
+  }
+  try { return { event, data: JSON.parse(data) }; } catch { return { event, data: {} }; }
+}
+
+async function send() {
+  const text = $("input").value.trim();
+  if (!text || state.busy) return;
+  state.busy = true;
+  $("send").disabled = true;
+  $("input").value = "";
+  addRow("user", text);
+
+  const { row, bubble } = addRow("assistant", "");
+  const cursor = el("span", "cursor");
+  bubble.appendChild(cursor);
+  const info = { route: null, sources: [], confidence: null };
+  let answer = "";
+
+  try {
+    const res = await fetch("/chat/stream", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ message: text, conversation_id: state.conversationId }),
+    });
+    if (res.status === 401) throw new Error("Unauthorized - set your API token in the sidebar.");
+    if (!res.ok) throw new Error("Request failed (" + res.status + ")");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const { event, data } = parseFrame(buf.slice(0, idx));
+        buf = buf.slice(idx + 2);
+        if (event === "meta") { state.conversationId = data.conversation_id; }
+        else if (event === "route") { info.route = data.route; }
+        else if (event === "sources") { info.sources = data.sources || []; }
+        else if (event === "delta") {
+          answer += data.text;
+          bubble.textContent = answer;
+          bubble.appendChild(cursor);
+          $("messages").scrollTop = $("messages").scrollHeight;
+        }
+        else if (event === "grade") { info.confidence = data.confidence; }
+        else if (event === "error") { throw new Error(data.detail || "stream error"); }
+        else if (event === "done") {
+          answer = data.answer || answer;
+          info.route = data.route || info.route;
+          info.sources = data.sources || info.sources;
+          if (data.confidence !== null && data.confidence !== undefined)
+            info.confidence = data.confidence;
+        }
+      }
+    }
+    bubble.textContent = answer || "(empty response)";
+    addMeta(row, info);
+  } catch (err) {
+    row.remove();
+    addRow("error", String(err.message || err));
+  } finally {
+    cursor.remove();
+    state.busy = false;
+    $("send").disabled = false;
+    loadConversations();
+    $("input").focus();
+  }
+}
+
+$("send").onclick = send;
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+loadConversations();
+$("input").focus();
+</script>
+</body>
+</html>
