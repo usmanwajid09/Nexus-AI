@@ -4,7 +4,9 @@
 
 > A modular AI operating system for knowledge workers — it remembers, retrieves, reasons, routes to specialists, understands code and images, and researches the live web.
 
-Phases 1–5 of the original plan are implemented as one coherent codebase: a routed LangGraph pipeline over a single Postgres+pgvector store, with every capability behind a small interface and every pure function unit-tested (48 tests).
+Phases 1–5 of the original plan are implemented as one coherent codebase: a routed LangGraph pipeline over a single Postgres+pgvector store, with every capability behind a small interface and every pure function unit-tested (53 tests).
+
+📄 **[Technical Implementation Report (PDF)](docs/Nexus-AI-Technical-Report.pdf)** — 16 pages covering the full stack with rationale, core concepts, design trade-offs, and engineering war stories.
 
 ## What shipped vs. the original 10-module spec
 
