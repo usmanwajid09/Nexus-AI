@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from nexus.api.auth import require_auth
 from nexus.api.schemas import (
@@ -103,8 +103,16 @@ async def web_ui() -> FileResponse:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, object]:
+    """Liveness + database reachability check."""
+    db_ok = False
+    try:
+        async with get_session_factory()() as session:
+            await session.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        logger.exception("database health check failed")
+    return {"status": "ok" if db_ok else "degraded", "database": db_ok}
 
 
 @app.get("/version")
