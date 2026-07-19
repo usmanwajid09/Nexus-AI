@@ -26,7 +26,7 @@ from nexus.api.schemas import (
 from nexus.api.streaming import sse_format
 from nexus.code.ingest import ingest_repo
 from nexus.config import get_settings
-from nexus.db.models import Conversation, Message
+from nexus.db.models import Chunk, Conversation, Document, Memory, Message
 from nexus.db.session import get_session_factory, init_db
 from nexus.embeddings import get_embedder
 from nexus.llm import get_llm
@@ -435,6 +435,30 @@ async def delete_conversation(
             raise HTTPException(status_code=404, detail="conversation not found")
         await session.delete(conversation)  # messages cascade via FK
         await session.commit()
+
+
+@app.get("/stats")
+async def stats(user: str = Depends(require_auth)) -> dict[str, int]:
+    """Per-owner counts across the corpus. Cheap; safe to poll from a UI."""
+    async with get_session_factory()() as session:
+        counts = {
+            "conversations": await session.scalar(
+                select(func.count()).select_from(Conversation).where(Conversation.owner == user)
+            ),
+            "documents": await session.scalar(
+                select(func.count()).select_from(Document).where(Document.owner == user)
+            ),
+            "chunks": await session.scalar(
+                select(func.count())
+                .select_from(Chunk)
+                .join(Document, Chunk.document_id == Document.id)
+                .where(Document.owner == user)
+            ),
+            "memories": await session.scalar(
+                select(func.count()).select_from(Memory).where(Memory.owner == user)
+            ),
+        }
+    return {k: v or 0 for k, v in counts.items()}
 
 
 @app.get("/memories/search", response_model=list[MemoryOut])
