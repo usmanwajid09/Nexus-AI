@@ -36,7 +36,15 @@ User question:
 """
 
 
-def parse_queries(payload: Any, *, max_queries: int = 3) -> list[str]:
+def parse_queries(
+    payload: Any, *, max_queries: int = 3, min_len: int = 2, max_len: int = 500
+) -> list[str]:
+    """Extract clean, bounded search queries from a rewriter payload.
+
+    Guards against pathological outputs: single-character queries, novel-length
+    prose, non-string entries, duplicates. Any of those would waste retrieval
+    work or embed poorly.
+    """
     if not isinstance(payload, dict):
         return []
     raw = payload.get("queries")
@@ -47,8 +55,11 @@ def parse_queries(payload: Any, *, max_queries: int = 3) -> list[str]:
         if not isinstance(entry, str):
             continue
         cleaned = entry.strip()
-        if cleaned and cleaned not in queries:
-            queries.append(cleaned)
+        if len(cleaned) < min_len or len(cleaned) > max_len:
+            continue
+        if cleaned in queries:
+            continue
+        queries.append(cleaned)
         if len(queries) >= max_queries:
             break
     return queries
