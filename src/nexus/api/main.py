@@ -107,6 +107,23 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/version")
+async def version(request: Request) -> dict[str, object]:
+    settings = request.app.state.settings
+    return {
+        "version": app.version,
+        "model": settings.llm_model,
+        "embedding_provider": settings.embedding_provider,
+        "embedding_dim": settings.embedding_dim,
+        "features": {
+            "rewrite": settings.rewrite_enabled,
+            "rerank": settings.rerank_enabled,
+            "grading": settings.grading_enabled,
+            "auth": bool(settings.auth_secret),
+        },
+    }
+
+
 async def _start_turn(
     req: ChatRequest, settings, owner: str
 ) -> tuple[uuid.UUID, list[dict[str, str]]]:
